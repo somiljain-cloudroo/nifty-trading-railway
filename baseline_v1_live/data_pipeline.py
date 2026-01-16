@@ -42,6 +42,8 @@ from .config import (
     MAX_BAR_AGE_SECONDS,
     MAX_BARS_PER_SYMBOL,
     BAR_PRUNING_THRESHOLD,
+    MARKET_START_TIME,
+    MARKET_CLOSE_TIME,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,7 +143,18 @@ class DataPipeline:
         self.spot_price = None
 
         logger.info("DataPipeline initialized")
-    
+
+    def _is_market_open(self):
+        """
+        Check if market is currently open (data should be flowing)
+
+        Returns True if current time is between 9:15 AM and 3:30 PM IST.
+        Used to avoid false disconnection detection after market close.
+        """
+        now = datetime.now(IST)
+        current_time = now.time()
+        return MARKET_START_TIME <= current_time <= MARKET_CLOSE_TIME
+
     def connect(self):
         """Initialize OpenAlgo client and connect WebSocket"""
         try:
@@ -622,6 +635,15 @@ class DataPipeline:
                     if self.subscribed_symbols and self.first_data_received_at is not None:
                         now = datetime.now(IST)
 
+                        # Skip data staleness checks if market is closed
+                        # After 3:30 PM, WebSocket stops sending data - this is expected behavior
+                        if not self._is_market_open():
+                            logger.debug(
+                                f"[MONITOR] Market closed (current time: {now.strftime('%H:%M:%S')}) - "
+                                f"skipping data freshness checks"
+                            )
+                            continue
+
                         # 🔧 FIX D: No-tick heartbeat detection
                         # Check if ANY ticks received recently (socket alive but no ticks = common Upstox issue)
                         if self.last_tick_time:
@@ -891,17 +913,25 @@ class DataPipeline:
     def check_data_freshness(self):
         """
         WATCHDOG: Check if data is fresh enough for trading
-        
+
         Returns:
             (bool, str): (is_fresh, reason_if_stale)
-        
+
         Failure conditions:
         1. Data coverage < 50% (half the symbols are stale)
         2. No fresh data for 30+ seconds (WebSocket frozen)
         3. Last bar >2 minutes old (bar aggregation stopped)
+
+        Note: Returns True (data is fresh) outside market hours (before 9:15 AM
+        or after 3:30 PM) since no data flow is expected when market is closed.
         """
         now = datetime.now(IST)
-        
+
+        # Skip freshness check outside market hours
+        # After 3:30 PM, WebSocket stops sending data - this is expected
+        if not self._is_market_open():
+            return True, ""
+
         with self.lock:
             # Skip check if no data received yet (startup phase)
             if self.first_data_received_at is None:

@@ -87,8 +87,9 @@ EMERGENCY_EXIT_RETRY_DELAY = 2  # Wait 2 seconds between emergency exit retries
 # ============================================================================
 
 MARKET_START_TIME = time(9, 15)   # 9:15 AM
-MARKET_END_TIME = time(15, 15)    # 3:15 PM
+MARKET_END_TIME = time(15, 15)    # 3:15 PM (stop entering new trades)
 FORCE_EXIT_TIME = time(15, 15)    # Force exit all positions at 3:15 PM
+MARKET_CLOSE_TIME = time(15, 30)  # 3:30 PM (actual NSE close - WebSocket stops after this)
 
 # ============================================================================
 # DATA PIPELINE
