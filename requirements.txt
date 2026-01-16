@@ -6,7 +6,7 @@ numpy>=1.24.0
 pytz>=2023.3
 
 # OpenAlgo Python SDK
-openalgo-python>=1.0.0
+openalgo>=1.0.0
 
 # Additional for live trading
 python-dotenv>=1.0.0

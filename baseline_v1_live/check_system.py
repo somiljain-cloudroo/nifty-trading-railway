@@ -68,7 +68,7 @@ def check_env_file():
 
 def check_openalgo_connection():
     """Check if OpenAlgo is accessible"""
-    from live.config import OPENALGO_HOST
+    from baseline_v1_live.config import OPENALGO_HOST
     
     try:
         import requests
@@ -92,7 +92,7 @@ def check_openalgo_connection():
 
 def check_api_key():
     """Check if API key is valid"""
-    from live.config import OPENALGO_API_KEY, OPENALGO_HOST
+    from baseline_v1_live.config import OPENALGO_API_KEY, OPENALGO_HOST
     
     if not OPENALGO_API_KEY or OPENALGO_API_KEY == 'your_api_key_here':
         logger.error("API key not configured in .env")
@@ -151,7 +151,7 @@ def check_directories():
 
 def check_broker_connection():
     """Check if broker is logged in via OpenAlgo"""
-    from live.config import OPENALGO_API_KEY, OPENALGO_HOST
+    from baseline_v1_live.config import OPENALGO_API_KEY, OPENALGO_HOST
     
     try:
         from openalgo import api
