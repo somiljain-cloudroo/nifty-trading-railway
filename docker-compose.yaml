@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # OpenAlgo API (dependency)
+  openalgo:
+    image: marketcalls/openalgo:latest
+    container_name: openalgo
+    ports:
+      - "5000:5000"
+      - "8765:8765"  # WebSocket proxy
+    volumes:
+      - openalgo_data:/app/db
+      - openalgo_logs:/app/log
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Baseline V1 Trading Agent
+  trading_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: baseline_v1_live
+    depends_on:
+      openalgo:
+        condition: service_healthy
+    volumes:
+      - ./baseline_v1_live/.env:/app/baseline_v1_live/.env:ro  # Read-only secrets
+      - ./logs:/app/logs  # Persist logs on host
+      - trading_state:/app/state  # Persist SQLite state
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENALGO_HOST=http://openalgo:5000
+      - OPENALGO_WS_URL=ws://openalgo:8765
+    restart: unless-stopped
+    command: >
+      python -m baseline_v1_live.baseline_v1_live
+      --expiry ${EXPIRY:-30JAN26}
+      --atm ${ATM:-23500}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Optional: Monitor Dashboard
+  monitor:
+    build:
+      context: ./baseline_v1_live/monitor_dashboard
+      dockerfile: Dockerfile
+    container_name: trading_monitor
+    depends_on:
+      - trading_agent
+    ports:
+      - "8050:8050"
+    volumes:
+      - trading_state:/app/state:ro  # Read-only access to state
+    environment:
+      - DB_PATH=/app/state/live_state.db
+    restart: unless-stopped
+
+volumes:
+  openalgo_data:
+  openalgo_logs:
+  trading_state:
+
+networks:
+  default:
+    name: trading_network
