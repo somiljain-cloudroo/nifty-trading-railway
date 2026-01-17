@@ -58,3 +58,6 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Historical data (not needed for live trading, saves 1.3GB+)
+data/

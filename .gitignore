@@ -9,6 +9,7 @@
 *.env
 .env.*
 !.env.example
+!.env.sample
 secrets.json
 credentials.json
 api_keys.txt
@@ -75,10 +76,9 @@ trading_*.log
 # =============================================================================
 # DATA FILES (Large files - excluded from git due to size)
 # =============================================================================
-# These files are too large for GitHub (>100MB limit)
-# Keep them locally but don't commit
-data/*.csv
-data/*.parquet
+# Historical data folder (1.3GB+) - not needed for live trading
+# Keep locally but don't commit to git or sync to EC2
+data/
 
 # =============================================================================
 # OS GENERATED

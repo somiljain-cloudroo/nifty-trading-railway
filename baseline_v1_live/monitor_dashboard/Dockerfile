@@ -16,5 +16,5 @@ RUN mkdir -p /app/state
 # Expose Dash port
 EXPOSE 8050
 
-# Run dashboard
-CMD ["python", "app.py"]
+# Run dashboard (headless mode for Docker)
+CMD ["streamlit", "run", "app.py", "--server.port=8050", "--server.address=0.0.0.0", "--server.headless=true"]

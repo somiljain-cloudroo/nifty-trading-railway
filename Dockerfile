@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY baseline_v1_live/ ./baseline_v1_live/
-COPY data/ ./data/
+# Note: data/ folder excluded - contains 1.3GB historical files not needed for live trading
 
 # Create directories for logs and state
 RUN mkdir -p /app/logs /app/state

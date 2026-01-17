@@ -15,10 +15,11 @@ services:
       - FLASK_ENV=production
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5000/ || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
   # Baseline V1 Trading Agent
   trading_agent:
@@ -30,7 +31,7 @@ services:
       openalgo:
         condition: service_healthy
     volumes:
-      - ./baseline_v1_live/.env:/app/baseline_v1_live/.env:ro  # Read-only secrets
+      - ./.env:/app/.env:ro  # Read-only secrets (root-level .env)
       - ./logs:/app/logs  # Persist logs on host
       - trading_state:/app/state  # Persist SQLite state
     environment:
