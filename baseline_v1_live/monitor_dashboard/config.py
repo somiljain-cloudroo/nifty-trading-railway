@@ -1,9 +1,8 @@
 import os
 from pathlib import Path
 
-# Absolute path to live_state.db
-BASE_DIR = Path(__file__).resolve().parents[1]  # live/
-STATE_DB_PATH = BASE_DIR / "live_state.db"
+# Use environment variable if set, otherwise use relative path
+STATE_DB_PATH = os.environ.get('DB_PATH', str(Path(__file__).resolve().parent.parent / "baseline_v1_live" / "live_state.db"))
 
 FAST_REFRESH = 5
 SLOW_REFRESH = 30
