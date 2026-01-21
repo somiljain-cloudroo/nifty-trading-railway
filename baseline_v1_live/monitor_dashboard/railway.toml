@@ -1,5 +1,5 @@
 # Railway Configuration for Monitor Dashboard
-# Real-time trading dashboard
+# Real-time trading dashboard - shares volume with trading-agent
 
 [build]
 builder = "DOCKERFILE"
