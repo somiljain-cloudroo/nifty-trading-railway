@@ -1,5 +1,6 @@
 # Dockerfile for Baseline V1 Live Trading Agent + Monitor Dashboard
 # Compatible with Railway, Docker Compose, and local development
+# Build: v2 - Forces cache invalidation
 FROM python:3.11-slim
 
 # Set working directory
