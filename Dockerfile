@@ -1,4 +1,4 @@
-# Dockerfile for Baseline V1 Live Trading Agent
+# Dockerfile for Baseline V1 Live Trading Agent + Monitor Dashboard
 # Compatible with Railway, Docker Compose, and local development
 FROM python:3.11-slim
 
@@ -35,9 +35,12 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV TZ=Asia/Kolkata
 
+# Expose monitor dashboard port
+EXPOSE 8050
+
 # Healthcheck (check if process is running)
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import os; exit(0 if os.path.exists('/app/state/live_state.db') else 1)"
+    CMD python -c "import os; exit(0 if os.path.exists('/app/baseline_v1_live/live_state.db') else 1)"
 
 # Use start script as entrypoint (reads from environment variables)
 CMD ["/app/start_trading.sh"]

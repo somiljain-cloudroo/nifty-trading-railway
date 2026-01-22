@@ -13,3 +13,8 @@ python-dotenv>=1.0.0
 
 # Telegram notifications
 requests>=2.31.0
+python-socketio[client]>=5.0.0
+
+# Monitor Dashboard
+streamlit>=1.28.0
+plotly>=5.18.0

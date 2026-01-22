@@ -53,11 +53,29 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
 fi
 
 # ============================================
-# START TRADING AGENT
+# START MONITOR DASHBOARD (background)
+# ============================================
+if [ "${ENABLE_MONITOR:-true}" = "true" ]; then
+    echo "[Monitor Dashboard] Starting on port 8050..."
+    export DB_PATH=/app/baseline_v1_live/live_state.db
+    cd /app/baseline_v1_live/monitor_dashboard
+    streamlit run app.py \
+        --server.port=8050 \
+        --server.address=0.0.0.0 \
+        --server.headless=true \
+        --browser.gatherUsageStats=false \
+        > /app/logs/monitor.log 2>&1 &
+    MONITOR_PID=$!
+    echo "[Monitor Dashboard] Started with PID $MONITOR_PID"
+    cd /app
+fi
+
+# ============================================
+# START TRADING AGENT (foreground)
 # ============================================
 echo "[Trading Agent] Starting baseline_v1_live with expiry=$EXPIRY_DATE, atm=$ATM_STRIKE"
 cd /app
 
-exec python -m baseline_v1_live.baseline_v1_live \
+python -m baseline_v1_live.baseline_v1_live \
     --expiry "$EXPIRY_DATE" \
     --atm "$ATM_STRIKE"
