@@ -13,8 +13,9 @@ COPY . .
 # Create state directory for volume mount
 RUN mkdir -p /app/state
 
-# Expose Dash port
-EXPOSE 8050
+# Environment variables
+ENV PORT=8050
 
 # Run dashboard (headless mode for Docker)
-CMD ["streamlit", "run", "app.py", "--server.port=8050", "--server.address=0.0.0.0", "--server.headless=true"]
+# Use shell form to expand PORT variable (Railway sets this dynamically)
+CMD streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true

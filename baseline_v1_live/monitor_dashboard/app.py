@@ -48,12 +48,23 @@ st.markdown(
 # ─────────────────────────────────────────────
 daily = read_df(q.DAILY_STATE)
 
-cumulative_r = daily["cumulative_R"].iloc[0] if not daily.empty else 0
-total_pnl = daily["total_pnl"].iloc[0] if not daily.empty else 0
+# Handle both SQLite (mixed case) and PostgreSQL (lowercase) column names
+def get_col(df, col_name):
+    """Get column value, trying lowercase if original not found"""
+    if col_name in df.columns:
+        return df[col_name].iloc[0]
+    elif col_name.lower() in df.columns:
+        return df[col_name.lower()].iloc[0]
+    return 0
+
+cumulative_r = get_col(daily, "cumulative_R") if not daily.empty else 0
+total_pnl = get_col(daily, "total_pnl") if not daily.empty else 0
 positions = read_df(q.POSITIONS)
 
-ce_count = len(positions[positions.option_type == "CE"])
-pe_count = len(positions[positions.option_type == "PE"])
+# Handle column name case sensitivity
+opt_type_col = "option_type" if "option_type" in positions.columns else "option_type"
+ce_count = len(positions[positions[opt_type_col] == "CE"]) if not positions.empty else 0
+pe_count = len(positions[positions[opt_type_col] == "PE"]) if not positions.empty else 0
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
