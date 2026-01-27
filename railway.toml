@@ -1,0 +1,16 @@
+# Railway Configuration for NIFTY Options Trading Agent
+# This configures the main trading agent service
+# OpenAlgo should be deployed as a separate service
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# No public port needed - this is a background worker
+# It connects to OpenAlgo service internally
