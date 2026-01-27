@@ -28,9 +28,8 @@ ENV PYTHONPATH=/app
 ENV EXPIRY=27JAN26
 ENV ATM=24800
 
-# Healthcheck (check if process is running)
-HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import os; exit(0 if os.path.exists('/app/state/live_state.db') else 1)"
+# No HEALTHCHECK - Railway handles this, and this is a background worker (no HTTP)
+# Railway will detect no port exposed and skip HTTP healthcheck
 
 # Use shell form to expand environment variables
 CMD python -m baseline_v1_live.baseline_v1_live --expiry ${EXPIRY} --atm ${ATM}
