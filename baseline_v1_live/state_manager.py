@@ -1,7 +1,8 @@
 """
 State Manager for Crash Recovery
 
-Persists strategy state to SQLite database for recovery after crashes/restarts.
+Persists strategy state to database for recovery after crashes/restarts.
+Supports both SQLite (local) and PostgreSQL (Railway/cloud).
 
 Persisted State:
 - Open positions
@@ -13,19 +14,32 @@ Persisted State:
 
 This allows the strategy to resume from where it left off if it crashes.
 
+Database Selection:
+- If DATABASE_URL environment variable is set (postgresql://), uses PostgreSQL
+- Otherwise, falls back to SQLite at STATE_DB_PATH
+
 🔴 PHASE 1 IMPROVEMENTS:
-- WAL mode enabled for concurrent access
+- WAL mode enabled for concurrent access (SQLite only)
 - Atomic transactions for critical multi-table writes
-- Busy timeout for lock handling
+- Busy timeout for lock handling (SQLite only)
 """
 
 import logging
 import sqlite3
 import json
+import os
 from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from functools import wraps
 import pytz
+
+# PostgreSQL support (optional - for Railway deployment)
+try:
+    import psycopg2
+    import psycopg2.extras
+    HAS_POSTGRES = True
+except ImportError:
+    HAS_POSTGRES = False
 
 try:
     from .config import STATE_DB_PATH, TRADES_LOG_CSV, DAILY_SUMMARY_CSV
@@ -35,30 +49,36 @@ except ModuleNotFoundError:
 logger = logging.getLogger(__name__)
 IST = pytz.timezone('Asia/Kolkata')
 
+# Database URL from environment (for PostgreSQL on Railway)
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+
 
 def atomic_transaction(func):
     """
     Decorator for atomic database transactions
-    
+
     Ensures all-or-nothing writes with automatic rollback on error.
     Critical for position+order saves where consistency is essential.
+    Works with both SQLite and PostgreSQL.
     """
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         try:
-            # Explicit BEGIN for immediate write lock
-            self.conn.execute("BEGIN IMMEDIATE")
-            
+            if self.db_type == 'sqlite':
+                # SQLite: Explicit BEGIN for immediate write lock
+                self.conn.execute("BEGIN IMMEDIATE")
+            # PostgreSQL: autocommit is off by default, transactions are implicit
+
             result = func(self, *args, **kwargs)
-            
+
             # Commit on success
             self.conn.commit()
-            
+
             return result
-            
-        except sqlite3.OperationalError as e:
-            # Database locked - retry once after brief wait
-            if "locked" in str(e).lower():
+
+        except (sqlite3.OperationalError if self.db_type == 'sqlite' else Exception) as e:
+            # Database locked - retry once after brief wait (SQLite specific)
+            if self.db_type == 'sqlite' and "locked" in str(e).lower():
                 logger.warning(f"Database locked in {func.__name__}, retrying once...")
                 import time
                 time.sleep(0.1)
@@ -76,46 +96,59 @@ def atomic_transaction(func):
                 self.conn.rollback()
                 logger.error(f"Database error in {func.__name__}: {e}")
                 raise
-                
+
         except Exception as e:
             # Rollback on any error
             self.conn.rollback()
             logger.error(f"Transaction failed in {func.__name__}: {e}", exc_info=True)
             raise
-    
+
     return wrapper
 
 
 class StateManager:
     """
-    Manage persistent state in SQLite
+    Manage persistent state in SQLite or PostgreSQL
+
+    Automatically detects database type from DATABASE_URL environment variable.
+    - If DATABASE_URL is set (postgresql://...), uses PostgreSQL
+    - Otherwise, falls back to SQLite at STATE_DB_PATH
     """
-    
+
     def __init__(self, db_path: str = STATE_DB_PATH):
         self.db_path = db_path
         self.conn = None
+        self.db_type = 'postgresql' if DATABASE_URL.startswith('postgresql://') else 'sqlite'
+        self.placeholder = '%s' if self.db_type == 'postgresql' else '?'
         self._init_database()
-        logger.info(f"StateManager initialized with DB: {db_path}")
+
+        if self.db_type == 'postgresql':
+            logger.info(f"StateManager initialized with PostgreSQL")
+        else:
+            logger.info(f"StateManager initialized with SQLite DB: {db_path}")
     
     def _init_database(self):
-        """Initialize database schema with WAL mode for production safety"""
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        
-        # 🔴 PHASE 1: Enable WAL mode for concurrent reads/writes
-        logger.info("Enabling SQLite WAL mode for production safety...")
-        self.conn.execute("PRAGMA journal_mode=WAL;")
-        
-        # Increase busy timeout to 5 seconds (handle concurrent access)
-        self.conn.execute("PRAGMA busy_timeout=5000;")
-        
-        # Set IMMEDIATE isolation for writes (acquire write lock immediately)
-        self.conn.isolation_level = 'IMMEDIATE'
-        
-        logger.info("SQLite WAL mode enabled successfully")
-        
+        """Initialize database schema (supports both SQLite and PostgreSQL)"""
+        if self.db_type == 'postgresql':
+            self._init_postgresql()
+        else:
+            self._init_sqlite()
+
+        # Run migrations (SQLite only for now)
+        if self.db_type == 'sqlite':
+            self._run_migrations()
+
+    def _init_postgresql(self):
+        """Initialize PostgreSQL database connection and schema"""
+        if not HAS_POSTGRES:
+            raise ImportError("psycopg2 is required for PostgreSQL. Install with: pip install psycopg2-binary")
+
+        logger.info("Connecting to PostgreSQL database...")
+        self.conn = psycopg2.connect(DATABASE_URL)
+        self.conn.autocommit = False
+
         cursor = self.conn.cursor()
-        
+
         # Positions table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS positions (
@@ -140,7 +173,7 @@ class StateManager:
                 trade_date TEXT
             )
         ''')
-        
+
         # Pending orders table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pending_orders (
@@ -155,7 +188,7 @@ class StateManager:
                 candidate_info TEXT
             )
         ''')
-        
+
         # Daily state table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS daily_state (
@@ -168,7 +201,206 @@ class StateManager:
                 updated_at TEXT
             )
         ''')
-        
+
+        # Trade log table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_log (
+                id SERIAL PRIMARY KEY,
+                trade_date TEXT,
+                symbol TEXT,
+                strike INTEGER,
+                option_type TEXT,
+                entry_time TEXT,
+                entry_price REAL,
+                sl_price REAL,
+                quantity INTEGER,
+                lots INTEGER,
+                actual_R REAL,
+                exit_time TEXT,
+                exit_price REAL,
+                exit_reason TEXT,
+                realized_pnl REAL,
+                realized_R REAL,
+                duration_minutes REAL
+            )
+        ''')
+
+        # Swing candidates table (for dashboard monitoring)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS swing_candidates (
+                symbol TEXT PRIMARY KEY,
+                swing_low REAL,
+                vwap_at_swing REAL,
+                timestamp TEXT,
+                option_type TEXT,
+                active INTEGER DEFAULT 1
+            )
+        ''')
+
+        # Best strikes table (for dashboard monitoring)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS best_strikes (
+                id SERIAL PRIMARY KEY,
+                option_type TEXT,
+                symbol TEXT,
+                entry_price REAL,
+                sl_price REAL,
+                sl_points REAL,
+                vwap_premium_percent REAL,
+                swing_timestamp TEXT,
+                updated_at TEXT,
+                is_current INTEGER DEFAULT 1
+            )
+        ''')
+
+        # Order triggers table (for dashboard monitoring)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS order_triggers (
+                id SERIAL PRIMARY KEY,
+                timestamp TEXT,
+                option_type TEXT,
+                action TEXT,
+                symbol TEXT,
+                current_price REAL,
+                swing_low REAL,
+                reason TEXT
+            )
+        ''')
+
+        # Swing history table (for dashboard)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS swing_history (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT,
+                swing_low REAL,
+                break_price REAL,
+                break_time TEXT,
+                vwap_premium REAL,
+                sl_percent REAL,
+                passed_filters INTEGER
+            )
+        ''')
+
+        # ALL SWINGS LOG - for verification/analysis
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS all_swings_log (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT,
+                swing_type TEXT,
+                swing_price REAL,
+                swing_time TEXT,
+                vwap REAL,
+                bar_index INTEGER,
+                detected_at TEXT,
+                UNIQUE(symbol, swing_time, swing_type)
+            )
+        ''')
+
+        # Bars table (for price data)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bars (
+                symbol TEXT,
+                timestamp TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                PRIMARY KEY (symbol, timestamp)
+            )
+        ''')
+
+        # Filter rejections table (for historical diagnostics)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS filter_rejections (
+                id SERIAL PRIMARY KEY,
+                timestamp TEXT,
+                symbol TEXT,
+                option_type TEXT,
+                swing_low REAL,
+                current_price REAL,
+                vwap_at_swing REAL,
+                vwap_premium_percent REAL,
+                sl_percent REAL,
+                rejection_reason TEXT
+            )
+        ''')
+
+        self.conn.commit()
+        logger.info("PostgreSQL database schema initialized")
+
+    def _init_sqlite(self):
+        """Initialize SQLite database connection and schema with WAL mode"""
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+
+        # 🔴 PHASE 1: Enable WAL mode for concurrent reads/writes
+        logger.info("Enabling SQLite WAL mode for production safety...")
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+
+        # Increase busy timeout to 5 seconds (handle concurrent access)
+        self.conn.execute("PRAGMA busy_timeout=5000;")
+
+        # Set IMMEDIATE isolation for writes (acquire write lock immediately)
+        self.conn.isolation_level = 'IMMEDIATE'
+
+        logger.info("SQLite WAL mode enabled successfully")
+
+        cursor = self.conn.cursor()
+
+        # Positions table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS positions (
+                symbol TEXT PRIMARY KEY,
+                strike INTEGER,
+                option_type TEXT,
+                entry_price REAL,
+                sl_price REAL,
+                quantity INTEGER,
+                lots INTEGER,
+                actual_R REAL,
+                entry_time TEXT,
+                current_price REAL,
+                unrealized_pnl REAL,
+                unrealized_R REAL,
+                exit_price REAL,
+                exit_time TEXT,
+                exit_reason TEXT,
+                realized_pnl REAL,
+                realized_R REAL,
+                is_closed INTEGER,
+                trade_date TEXT
+            )
+        ''')
+
+        # Pending orders table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pending_orders (
+                order_id TEXT PRIMARY KEY,
+                symbol TEXT,
+                order_type TEXT,
+                limit_price REAL,
+                trigger_price REAL,
+                quantity INTEGER,
+                status TEXT,
+                placed_at TEXT,
+                candidate_info TEXT
+            )
+        ''')
+
+        # Daily state table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daily_state (
+                trade_date TEXT PRIMARY KEY,
+                cumulative_R REAL,
+                daily_exit_triggered INTEGER,
+                daily_exit_reason TEXT,
+                total_pnl REAL,
+                total_positions INTEGER,
+                updated_at TEXT
+            )
+        ''')
+
         # Trade log table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS trade_log (
@@ -191,7 +423,7 @@ class StateManager:
                 duration_minutes REAL
             )
         ''')
-        
+
         # Swing candidates table (for dashboard monitoring)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS swing_candidates (
@@ -203,7 +435,7 @@ class StateManager:
                 active INTEGER DEFAULT 1
             )
         ''')
-        
+
         # Best strikes table (for dashboard monitoring)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS best_strikes (
@@ -219,7 +451,7 @@ class StateManager:
                 is_current INTEGER DEFAULT 1
             )
         ''')
-        
+
         # Order triggers table (for dashboard monitoring)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS order_triggers (
@@ -233,7 +465,7 @@ class StateManager:
                 reason TEXT
             )
         ''')
-        
+
         # Swing history table (for dashboard)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS swing_history (
@@ -247,7 +479,7 @@ class StateManager:
                 passed_filters INTEGER
             )
         ''')
-        
+
         # ALL SWINGS LOG - for verification/analysis
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS all_swings_log (
@@ -262,7 +494,7 @@ class StateManager:
                 UNIQUE(symbol, swing_time, swing_type)
             )
         ''')
-        
+
         # Bars table (for price data)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bars (
@@ -276,7 +508,7 @@ class StateManager:
                 PRIMARY KEY (symbol, timestamp)
             )
         ''')
-        
+
         # Filter rejections table (for historical diagnostics)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS filter_rejections (
@@ -292,12 +524,40 @@ class StateManager:
                 rejection_reason TEXT
             )
         ''')
-        
-        self.conn.commit()
-        logger.info("Database schema initialized")
 
-        # Run migrations
-        self._run_migrations()
+        self.conn.commit()
+        logger.info("SQLite database schema initialized")
+
+    def _execute(self, cursor, sql: str, params: tuple = None):
+        """Execute SQL with proper placeholder substitution for the database type"""
+        if self.db_type == 'postgresql' and params:
+            # Convert ? placeholders to %s for PostgreSQL
+            sql = sql.replace('?', '%s')
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+
+    def _fetchone_dict(self, cursor) -> Optional[Dict]:
+        """Fetch one row as dictionary (works for both SQLite and PostgreSQL)"""
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        if self.db_type == 'sqlite':
+            return dict(row)
+        else:
+            # PostgreSQL: convert tuple to dict using column names
+            columns = [desc[0] for desc in cursor.description]
+            return dict(zip(columns, row))
+
+    def _fetchall_dict(self, cursor) -> List[Dict]:
+        """Fetch all rows as list of dictionaries"""
+        rows = cursor.fetchall()
+        if self.db_type == 'sqlite':
+            return [dict(row) for row in rows]
+        else:
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
 
     def _run_migrations(self):
         """Apply database migrations for schema changes"""
@@ -361,13 +621,9 @@ class StateManager:
     def save_positions(self, positions: List[Dict]):
         """Save all positions (open + closed) to database"""
         cursor = self.conn.cursor()
-        
+
         for pos in positions:
-            cursor.execute('''
-                INSERT OR REPLACE INTO positions VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
-            ''', (
+            params = (
                 pos['symbol'],
                 pos['strike'],
                 pos['option_type'],
@@ -387,26 +643,63 @@ class StateManager:
                 pos['realized_R'],
                 1 if pos['is_closed'] else 0,
                 datetime.now(IST).date().isoformat()
-            ))
-        
+            )
+
+            if self.db_type == 'postgresql':
+                cursor.execute('''
+                    INSERT INTO positions VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (symbol) DO UPDATE SET
+                        strike = EXCLUDED.strike,
+                        option_type = EXCLUDED.option_type,
+                        entry_price = EXCLUDED.entry_price,
+                        sl_price = EXCLUDED.sl_price,
+                        quantity = EXCLUDED.quantity,
+                        lots = EXCLUDED.lots,
+                        actual_R = EXCLUDED.actual_R,
+                        entry_time = EXCLUDED.entry_time,
+                        current_price = EXCLUDED.current_price,
+                        unrealized_pnl = EXCLUDED.unrealized_pnl,
+                        unrealized_R = EXCLUDED.unrealized_R,
+                        exit_price = EXCLUDED.exit_price,
+                        exit_time = EXCLUDED.exit_time,
+                        exit_reason = EXCLUDED.exit_reason,
+                        realized_pnl = EXCLUDED.realized_pnl,
+                        realized_R = EXCLUDED.realized_R,
+                        is_closed = EXCLUDED.is_closed,
+                        trade_date = EXCLUDED.trade_date
+                ''', params)
+            else:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO positions VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                ''', params)
+
         # Commit handled by @atomic_transaction decorator
     
     def load_open_positions(self) -> List[Dict]:
         """Load open positions from database"""
         cursor = self.conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM positions
-            WHERE is_closed = 0
-            AND trade_date = ?
-        ''', (datetime.now(IST).date().isoformat(),))
-        
-        rows = cursor.fetchall()
-        
-        positions = []
-        for row in rows:
-            positions.append(dict(row))
-        
+
+        today = datetime.now(IST).date().isoformat()
+
+        if self.db_type == 'postgresql':
+            cursor.execute('''
+                SELECT * FROM positions
+                WHERE is_closed = 0
+                AND trade_date = %s
+            ''', (today,))
+        else:
+            cursor.execute('''
+                SELECT * FROM positions
+                WHERE is_closed = 0
+                AND trade_date = ?
+            ''', (today,))
+
+        positions = self._fetchall_dict(cursor)
+
         logger.info(f"Loaded {len(positions)} open positions from DB")
         return positions
     
@@ -472,10 +765,8 @@ class StateManager:
     def save_daily_state(self, state: Dict):
         """Save daily state (cumulative R, exit status, etc.) with atomic transaction"""
         cursor = self.conn.cursor()
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO daily_state VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
+
+        params = (
             datetime.now(IST).date().isoformat(),
             state.get('cumulative_R', 0),
             1 if state.get('daily_exit_triggered', False) else 0,
@@ -483,24 +774,44 @@ class StateManager:
             state.get('total_pnl', 0),
             state.get('total_positions', 0),
             datetime.now(IST).isoformat()
-        ))
-        
+        )
+
+        if self.db_type == 'postgresql':
+            cursor.execute('''
+                INSERT INTO daily_state VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (trade_date) DO UPDATE SET
+                    cumulative_R = EXCLUDED.cumulative_R,
+                    daily_exit_triggered = EXCLUDED.daily_exit_triggered,
+                    daily_exit_reason = EXCLUDED.daily_exit_reason,
+                    total_pnl = EXCLUDED.total_pnl,
+                    total_positions = EXCLUDED.total_positions,
+                    updated_at = EXCLUDED.updated_at
+            ''', params)
+        else:
+            cursor.execute('''
+                INSERT OR REPLACE INTO daily_state VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', params)
+
         # Commit handled by @atomic_transaction decorator
     
     def load_daily_state(self) -> Optional[Dict]:
         """Load daily state from database"""
         cursor = self.conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM daily_state
-            WHERE trade_date = ?
-        ''', (datetime.now(IST).date().isoformat(),))
-        
-        row = cursor.fetchone()
-        
-        if row:
-            return dict(row)
-        return None
+
+        today = datetime.now(IST).date().isoformat()
+
+        if self.db_type == 'postgresql':
+            cursor.execute('''
+                SELECT * FROM daily_state
+                WHERE trade_date = %s
+            ''', (today,))
+        else:
+            cursor.execute('''
+                SELECT * FROM daily_state
+                WHERE trade_date = ?
+            ''', (today,))
+
+        return self._fetchone_dict(cursor)
     
     def log_trade(self, position_dict: Dict):
         """Log completed trade to database and CSV"""
@@ -785,9 +1096,7 @@ class StateManager:
         cursor = self.conn.cursor()
 
         for symbol, bar in bars_dict.items():
-            cursor.execute('''
-                INSERT OR REPLACE INTO bars VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
+            params = (
                 symbol,
                 bar['timestamp'],
                 bar['open'],
@@ -795,16 +1104,36 @@ class StateManager:
                 bar['low'],
                 bar['close'],
                 bar['volume']
-            ))
+            )
 
-            # Keep all bars from today only (auto-cleanup handled at market close)
-            # Full session has ~375 bars (9:15 AM - 3:30 PM)
-            # No need to prune during the day - dashboard needs full session data
-            cursor.execute('''
-                DELETE FROM bars
-                WHERE symbol = ?
-                AND DATE(timestamp) < DATE('now', 'localtime')
-            ''', (symbol,))
+            if self.db_type == 'postgresql':
+                cursor.execute('''
+                    INSERT INTO bars VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (symbol, timestamp) DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume
+                ''', params)
+
+                # Keep all bars from today only
+                cursor.execute('''
+                    DELETE FROM bars
+                    WHERE symbol = %s
+                    AND DATE(timestamp::timestamp) < CURRENT_DATE
+                ''', (symbol,))
+            else:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO bars VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', params)
+
+                # Keep all bars from today only (auto-cleanup handled at market close)
+                cursor.execute('''
+                    DELETE FROM bars
+                    WHERE symbol = ?
+                    AND DATE(timestamp) < DATE('now', 'localtime')
+                ''', (symbol,))
 
         self.conn.commit()
     
