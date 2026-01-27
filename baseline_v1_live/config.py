@@ -158,7 +158,8 @@ ORDER_RETRY_DELAY = 2  # Seconds between retries
 # STATE PERSISTENCE
 # ============================================================================
 
-STATE_DB_PATH = os.path.join(os.path.dirname(__file__), 'live_state.db')
+# Support Docker volume mounts via environment variable
+STATE_DB_PATH = os.getenv('STATE_DB_PATH', os.path.join(os.path.dirname(__file__), 'live_state.db'))
 STATE_SAVE_INTERVAL = 30  # Save state every 30 seconds
 
 # ============================================================================

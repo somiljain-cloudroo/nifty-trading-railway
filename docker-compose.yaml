@@ -1,14 +1,11 @@
-version: '3.8'
-
 services:
   # OpenAlgo API (dependency)
-  # OpenAlgo source is in ./openalgo-zerodha/openalgo
+  # Using existing openalgo:latest image
   openalgo:
-    build:
-      context: ./openalgo-zerodha/openalgo
+    image: openalgo:latest
     container_name: openalgo
     ports:
-      - "5000:5000"
+      - "5001:5000"  # Changed from 5000 to 5001 (macOS uses 5000)
       - "8765:8765"  # WebSocket proxy
     volumes:
       - ./openalgo-zerodha/openalgo/.env:/app/.env:ro  # Mount .env file (not copied during build)
@@ -36,11 +33,12 @@ services:
     volumes:
       - ./.env:/app/.env:ro  # Read-only secrets (root-level .env)
       - ./logs:/app/logs  # Persist logs on host
-      - trading_state:/app/baseline_v1_live  # Persist SQLite state
+      - trading_state:/app/state  # Persist SQLite state in /app/state
     environment:
       - PYTHONUNBUFFERED=1
       - OPENALGO_HOST=http://openalgo:5000
       - OPENALGO_WS_URL=ws://openalgo:8765
+      - STATE_DB_PATH=/app/state/live_state.db
     restart: unless-stopped
     command: >
       python -m baseline_v1_live.baseline_v1_live
@@ -63,9 +61,9 @@ services:
     ports:
       - "8050:8050"
     volumes:
-      - trading_state:/app/baseline_v1_live:ro  # Read-only access to state
+      - trading_state:/app/state:ro  # Read-only access to state
     environment:
-      - DB_PATH=/app/baseline_v1_live/live_state.db
+      - DB_PATH=/app/state/live_state.db
     restart: unless-stopped
 
 volumes:
