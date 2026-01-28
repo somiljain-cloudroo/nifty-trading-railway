@@ -2,7 +2,7 @@ import os
 import sqlite3
 import pandas as pd
 
-# SQLAlchemy support for PostgreSQL (eliminates pandas warnings)
+# SQLAlchemy support for PostgreSQL
 try:
     from sqlalchemy import create_engine, text
     HAS_SQLALCHEMY = True
@@ -28,11 +28,27 @@ def read_df(query, params=None):
     if DB_TYPE == 'postgresql':
         if not HAS_SQLALCHEMY:
             raise ImportError("SQLAlchemy is required for PostgreSQL. Install with: pip install sqlalchemy")
+
         # Convert SQLite placeholders (?) to PostgreSQL (%s)
         if params:
             query = query.replace('?', '%s')
-        # Pass engine directly to pandas (recommended for SQLAlchemy 2.0)
-        return pd.read_sql(query, _pg_engine, params=params)
+
+        # Use SQLAlchemy text() wrapper and connection context
+        with _pg_engine.connect() as conn:
+            if params:
+                # Convert params tuple to dict for SQLAlchemy text()
+                # Replace %s with :p0, :p1, etc. for named parameters
+                param_dict = {}
+                for i, val in enumerate(params):
+                    query = query.replace('%s', f':p{i}', 1)
+                    param_dict[f'p{i}'] = val
+                result = conn.execute(text(query), param_dict)
+            else:
+                result = conn.execute(text(query))
+
+            # Convert to DataFrame
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            return df
     else:
         conn = sqlite3.connect(STATE_DB_PATH, check_same_thread=False)
         try:
