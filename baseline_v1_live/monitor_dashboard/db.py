@@ -2,13 +2,12 @@ import os
 import sqlite3
 import pandas as pd
 
-# PostgreSQL support (optional - for Railway deployment)
+# SQLAlchemy support for PostgreSQL (eliminates pandas warnings)
 try:
-    import psycopg2
-    import psycopg2.extras
-    HAS_POSTGRES = True
+    from sqlalchemy import create_engine
+    HAS_SQLALCHEMY = True
 except ImportError:
-    HAS_POSTGRES = False
+    HAS_SQLALCHEMY = False
 
 from config import STATE_DB_PATH
 
@@ -18,13 +17,18 @@ DATABASE_URL = os.environ.get('DATABASE_URL', '')
 # Determine database type
 DB_TYPE = 'postgresql' if DATABASE_URL.startswith('postgresql://') else 'sqlite'
 
+# Create SQLAlchemy engine for PostgreSQL (reusable connection pool)
+_pg_engine = None
+if DB_TYPE == 'postgresql' and HAS_SQLALCHEMY:
+    _pg_engine = create_engine(DATABASE_URL)
+
 
 def get_connection():
     """Get database connection (PostgreSQL or SQLite)"""
     if DB_TYPE == 'postgresql':
-        if not HAS_POSTGRES:
-            raise ImportError("psycopg2 is required for PostgreSQL. Install with: pip install psycopg2-binary")
-        return psycopg2.connect(DATABASE_URL)
+        if not HAS_SQLALCHEMY:
+            raise ImportError("SQLAlchemy is required for PostgreSQL. Install with: pip install sqlalchemy")
+        return _pg_engine.connect()
     else:
         return sqlite3.connect(
             STATE_DB_PATH,
