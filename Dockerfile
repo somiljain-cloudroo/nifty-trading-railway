@@ -25,8 +25,8 @@ RUN mkdir -p /app/logs /app/state
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
-ENV EXPIRY=27JAN26
-ENV ATM=24800
+ENV EXPIRY=10FEB26
+ENV ATM=25250
 
 # No HEALTHCHECK - Railway handles this, and this is a background worker (no HTTP)
 # Railway will detect no port exposed and skip HTTP healthcheck
