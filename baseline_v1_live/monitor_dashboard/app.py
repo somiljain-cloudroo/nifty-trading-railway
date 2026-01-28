@@ -324,11 +324,14 @@ with tabs[5]:
         # Debug info (can be removed later)
         with st.expander("🔍 Debug Info"):
             st.write(f"OHLC shape: {ohlc_df.shape}")
-            st.write(f"Timestamp dtype: {ohlc_df['timestamp'].dtype}")
-            st.write(f"First timestamp: {ohlc_df['timestamp'].iloc[0]}")
-            st.write(f"Last timestamp: {ohlc_df['timestamp'].iloc[-1]}")
-            st.write("Sample data:")
-            st.dataframe(ohlc_df[['timestamp', 'open', 'high', 'low', 'close']].head())
+            if not ohlc_df.empty:
+                st.write(f"Timestamp dtype: {ohlc_df['timestamp'].dtype}")
+                st.write(f"First timestamp: {ohlc_df['timestamp'].iloc[0]}")
+                st.write(f"Last timestamp: {ohlc_df['timestamp'].iloc[-1]}")
+                st.write("Sample data:")
+                st.dataframe(ohlc_df[['timestamp', 'open', 'high', 'low', 'close']].head())
+            else:
+                st.write("No OHLC data available for this symbol")
 
         # Display chart
         candlestick_chart(ohlc_df, swings_df, position_df, symbol)
