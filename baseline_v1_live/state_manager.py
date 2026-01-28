@@ -925,15 +925,15 @@ class StateManager:
     def cleanup_old_data(self, days_to_keep: int = 30):
         """Delete data older than N days"""
         cutoff_date = (datetime.now(IST).date() - timedelta(days=days_to_keep)).isoformat()
-        
+
         cursor = self.conn.cursor()
-        
-        cursor.execute('DELETE FROM positions WHERE trade_date < ?', (cutoff_date,))
-        cursor.execute('DELETE FROM daily_state WHERE trade_date < ?', (cutoff_date,))
-        cursor.execute('DELETE FROM trade_log WHERE trade_date < ?', (cutoff_date,))
-        
+
+        self._execute(cursor, 'DELETE FROM positions WHERE trade_date < ?', (cutoff_date,))
+        self._execute(cursor, 'DELETE FROM daily_state WHERE trade_date < ?', (cutoff_date,))
+        self._execute(cursor, 'DELETE FROM trade_log WHERE trade_date < ?', (cutoff_date,))
+
         self.conn.commit()
-        
+
         logger.info(f"Cleaned up data older than {days_to_keep} days")
     
     def save_swing_candidates(self, candidates: Dict):
@@ -1053,14 +1053,17 @@ class StateManager:
         
         self.conn.commit()
     
-    def log_order_trigger(self, option_type: str, action: str, symbol: str, 
+    def log_order_trigger(self, option_type: str, action: str, symbol: str,
                          current_price: float, swing_low: float, reason: str):
         """Log order trigger action (for dashboard)"""
         cursor = self.conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO order_triggers VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
+
+        # Use DEFAULT for auto-increment ID in PostgreSQL, NULL for SQLite
+        id_placeholder = 'DEFAULT' if self.db_type == 'postgresql' else 'NULL'
+        sql = f'''
+            INSERT INTO order_triggers VALUES ({id_placeholder}, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        self._execute(cursor, sql, (
             datetime.now(IST).isoformat(),
             option_type,
             action,
@@ -1069,17 +1072,20 @@ class StateManager:
             swing_low,
             reason
         ))
-        
+
         self.conn.commit()
     
     def log_swing_break(self, symbol: str, swing_low: float, break_price: float,
                        vwap_premium: float, sl_percent: float, passed_filters: bool):
         """Log swing break event (for dashboard)"""
         cursor = self.conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO swing_history VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
+
+        # Use DEFAULT for auto-increment ID in PostgreSQL, NULL for SQLite
+        id_placeholder = 'DEFAULT' if self.db_type == 'postgresql' else 'NULL'
+        sql = f'''
+            INSERT INTO swing_history VALUES ({id_placeholder}, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        self._execute(cursor, sql, (
             symbol,
             swing_low,
             break_price,
@@ -1088,7 +1094,7 @@ class StateManager:
             sl_percent,
             1 if passed_filters else 0
         ))
-        
+
         self.conn.commit()
     
     def save_latest_bars(self, bars_dict: Dict):
