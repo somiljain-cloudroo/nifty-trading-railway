@@ -1,4 +1,5 @@
 import sys
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -10,14 +11,54 @@ import pandas as pd
 from datetime import datetime
 import pytz
 import plotly.express as px
+import time as time_module
 
 from db import read_df
 from ui_components import kpi, df_table, candlestick_chart, build_symbol
 import queries as q
-from config import STRATEGY_NAME, FAST_REFRESH
+from config import STRATEGY_NAME, FAST_REFRESH, STATE_DB_PATH
 
 
 IST = pytz.timezone("Asia/Kolkata")
+
+
+def wait_for_database():
+    """Check if database file exists and is accessible with required tables.
+
+    Returns tuple: (ready: bool, status_message: str)
+    """
+    # Check if using PostgreSQL (DATABASE_URL set)
+    if os.environ.get('DATABASE_URL', '').startswith('postgresql://'):
+        return True, "PostgreSQL mode"
+
+    # For SQLite, check if file exists
+    if not os.path.exists(STATE_DB_PATH):
+        return False, f"Database file not found: {STATE_DB_PATH}"
+
+    # Check file size - empty file means DB not initialized
+    try:
+        file_size = os.path.getsize(STATE_DB_PATH)
+        if file_size == 0:
+            return False, "Database file exists but is empty (0 bytes)"
+    except Exception as e:
+        return False, f"Cannot check file size: {e}"
+
+    # Try to query the actual table we need
+    try:
+        import sqlite3
+        # Use immutable mode for read-only filesystem
+        db_uri = f"file:{STATE_DB_PATH}?mode=ro&immutable=1"
+        conn = sqlite3.connect(db_uri, uri=True)
+        cursor = conn.cursor()
+        # Check if daily_state table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_state'")
+        result = cursor.fetchone()
+        conn.close()
+        if result is None:
+            return False, f"Database exists ({file_size} bytes) but 'daily_state' table not found"
+        return True, f"Database ready ({file_size} bytes)"
+    except Exception as e:
+        return False, f"Database connection error: {e}"
 
 # ─────────────────────────────────────────────
 # Streamlit Page Config
@@ -31,13 +72,25 @@ st.set_page_config(
 # Auto refresh
 
 # ─────────────────────────────────────────────
+# DATABASE CHECK - Wait for trading_agent to create database
+# ─────────────────────────────────────────────
+db_ready, db_status = wait_for_database()
+if not db_ready:
+    st.warning("Waiting for database...")
+    st.info(f"**Status:** {db_status}")
+    st.code(f"DB_PATH={STATE_DB_PATH}")
+    st.caption("The trading agent has not created the database yet. Retrying in 5 seconds...")
+    time_module.sleep(5)
+    st.rerun()
+
+# ─────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────
 now = datetime.now(IST).strftime("%H:%M:%S IST")
 
 st.markdown(
     f"""
-    # 🧠 {STRATEGY_NAME} – Live Dashboard  
+    # 🧠 {STRATEGY_NAME} – Live Dashboard
     **Time:** {now}
     ---
     """
@@ -46,7 +99,15 @@ st.markdown(
 # ─────────────────────────────────────────────
 # KPI ROW
 # ─────────────────────────────────────────────
-daily = read_df(q.DAILY_STATE)
+try:
+    daily = read_df(q.DAILY_STATE)
+except Exception as e:
+    st.error(f"Database query error: {e}")
+    st.info(f"**DB Status:** {db_status}")
+    st.code(f"DB_PATH={STATE_DB_PATH}")
+    st.caption("Retrying in 5 seconds...")
+    time_module.sleep(5)
+    st.rerun()
 
 # Handle both SQLite (mixed case) and PostgreSQL (lowercase) column names
 def get_col(df, col_name):
@@ -482,7 +543,6 @@ with tabs[7]:
 # AUTO REFRESH
 # ─────────────────────────────────────────────
 st.caption(f"Auto-refresh every {FAST_REFRESH}s")
-import time
-time.sleep(FAST_REFRESH)
+time_module.sleep(FAST_REFRESH)
 st.rerun()
 

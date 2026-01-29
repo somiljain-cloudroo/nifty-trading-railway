@@ -50,7 +50,10 @@ def read_df(query, params=None):
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
             return df
     else:
-        conn = sqlite3.connect(STATE_DB_PATH, check_same_thread=False)
+        # Use URI mode with immutable flag for read-only access
+        # This works even when the filesystem is mounted read-only
+        db_uri = f"file:{STATE_DB_PATH}?mode=ro&immutable=1"
+        conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
         try:
             return pd.read_sql(query, conn, params=params)
         finally:

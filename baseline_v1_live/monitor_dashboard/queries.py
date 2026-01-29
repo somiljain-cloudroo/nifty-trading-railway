@@ -15,7 +15,8 @@ ORDER BY updated_at DESC
 LIMIT 1
 """
 
-# Stage-1: Static Filters Candidates (passed price range 100-300 and VWAP ≥4%)
+# Stage-1: Static Filters Candidates (passed price range 100-300 and VWAP >=4%)
+# SQLite compatible - no type casting needed
 STAGE1_STATIC_CANDIDATES = """
 SELECT
     sc.symbol,
@@ -23,15 +24,15 @@ SELECT
     sc.vwap_at_swing,
     sc.timestamp,
     sc.option_type,
-    ROUND((((sc.swing_low - sc.vwap_at_swing) / sc.vwap_at_swing) * 100)::numeric, 2) as vwap_premium_pct,
+    ROUND(((sc.swing_low - sc.vwap_at_swing) / sc.vwap_at_swing) * 100, 2) as vwap_premium_pct,
     CASE
         WHEN b.highest_high IS NOT NULL THEN
-            ROUND((b.highest_high + 1 - sc.swing_low)::numeric, 2)
+            ROUND(b.highest_high + 1 - sc.swing_low, 2)
         ELSE NULL
     END as sl_points,
     CASE
         WHEN b.highest_high IS NOT NULL THEN
-            ROUND((((b.highest_high + 1 - sc.swing_low) / sc.swing_low) * 100)::numeric, 2)
+            ROUND(((b.highest_high + 1 - sc.swing_low) / sc.swing_low) * 100, 2)
         ELSE NULL
     END as sl_pct
 FROM swing_candidates sc
@@ -54,11 +55,11 @@ SELECT
     sc.vwap_at_swing,
     sc.timestamp,
     sc.option_type,
-    ROUND((((sc.swing_low - sc.vwap_at_swing) / sc.vwap_at_swing) * 100)::numeric, 2) as vwap_premium_pct,
+    ROUND(((sc.swing_low - sc.vwap_at_swing) / sc.vwap_at_swing) * 100, 2) as vwap_premium_pct,
     b.highest_high,
-    ROUND((b.highest_high + 1)::numeric, 2) as sl_price,
-    ROUND((b.highest_high + 1 - sc.swing_low)::numeric, 2) as sl_points,
-    ROUND((((b.highest_high + 1 - sc.swing_low) / sc.swing_low) * 100)::numeric, 2) as sl_pct,
+    ROUND(b.highest_high + 1, 2) as sl_price,
+    ROUND(b.highest_high + 1 - sc.swing_low, 2) as sl_points,
+    ROUND(((b.highest_high + 1 - sc.swing_low) / sc.swing_low) * 100, 2) as sl_pct,
     'Qualified' as status
 FROM swing_candidates sc
 INNER JOIN (
@@ -74,10 +75,10 @@ WHERE sc.active = 1
 ORDER BY sc.option_type, sc.timestamp DESC
 """
 
-# Filter Summary Metrics (PostgreSQL compatible)
+# Filter Summary Metrics (SQLite compatible)
 FILTER_SUMMARY_METRICS = """
 SELECT
-    (SELECT COUNT(*) FROM all_swings_log WHERE swing_type = 'Low' AND DATE(swing_time::timestamp) = CURRENT_DATE) as total_swings_detected,
+    (SELECT COUNT(*) FROM all_swings_log WHERE swing_type = 'Low' AND DATE(swing_time) = DATE('now', 'localtime')) as total_swings_detected,
     (SELECT COUNT(*) FROM swing_candidates WHERE active = 1) as static_filter_pass,
     (SELECT COUNT(*) FROM (
         SELECT sc.symbol
@@ -87,7 +88,7 @@ SELECT
             AND ((b.highest_high + 1 - sc.swing_low) / sc.swing_low) >= 0.02
             AND ((b.highest_high + 1 - sc.swing_low) / sc.swing_low) <= 0.10
     ) subq) as sl_filter_pass,
-    (SELECT COUNT(*) FROM best_strikes WHERE is_current = 1 AND DATE(updated_at::timestamp) = CURRENT_DATE) as best_strikes_selected
+    (SELECT COUNT(*) FROM best_strikes WHERE is_current = 1 AND DATE(updated_at) = DATE('now', 'localtime')) as best_strikes_selected
 """
 
 # Legacy alias for backward compatibility
@@ -101,14 +102,14 @@ SELECT
     entry_price,
     sl_price,
     sl_points,
-    ROUND(vwap_premium_percent::numeric, 2) as vwap_premium_pct,
-    ROUND(((sl_price - entry_price) / entry_price * 100)::numeric, 2) as sl_pct,
+    ROUND(vwap_premium_percent, 2) as vwap_premium_pct,
+    ROUND((sl_price - entry_price) / entry_price * 100, 2) as sl_pct,
     swing_timestamp,
     updated_at,
     'Final' as status
 FROM best_strikes
 WHERE is_current = 1
-AND DATE(updated_at::timestamp) = CURRENT_DATE
+AND DATE(updated_at) = DATE('now', 'localtime')
 ORDER BY option_type DESC, updated_at DESC
 """
 
@@ -120,10 +121,10 @@ SELECT
     timestamp,
     symbol,
     option_type,
-    ROUND(swing_low::numeric, 2) as swing_low,
-    ROUND(vwap_at_swing::numeric, 2) as vwap_at_swing,
-    ROUND((vwap_premium_percent * 100)::numeric, 2) as vwap_premium_pct,
-    ROUND((sl_percent * 100)::numeric, 2) as sl_pct,
+    ROUND(swing_low, 2) as swing_low,
+    ROUND(vwap_at_swing, 2) as vwap_at_swing,
+    ROUND(vwap_premium_percent * 100, 2) as vwap_premium_pct,
+    ROUND(sl_percent * 100, 2) as sl_pct,
     rejection_reason
 FROM filter_rejections
 ORDER BY timestamp DESC
@@ -170,7 +171,7 @@ LAST_20_BARS = """
 SELECT timestamp, open, high, low, close, volume
 FROM bars
 WHERE symbol = ?
-AND DATE(timestamp::timestamp) = CURRENT_DATE
+AND DATE(timestamp) = DATE('now', 'localtime')
 ORDER BY timestamp ASC
 """
 
