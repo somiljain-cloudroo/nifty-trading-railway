@@ -1,14 +1,19 @@
-# Dockerfile for Baseline V1 Live Trading Agent
+# Dockerfile for Baseline V1 Live Trading Agent + Monitor Dashboard
+# Compatible with Railway, Docker Compose, and local development
+# Build: v2 - Forces cache invalidation
 FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Set timezone to IST
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     build-essential \
+    tzdata \
+    && ln -fs /usr/share/zoneinfo/Asia/Kolkata /etc/localtime \
+    && dpkg-reconfigure -f noninteractive tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for layer caching
@@ -19,17 +24,24 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY baseline_v1_live/ ./baseline_v1_live/
 # Note: data/ folder excluded - contains 1.3GB historical files not needed for live trading
 
-# Create directories for logs and state
-RUN mkdir -p /app/logs /app/state
+# Copy start script
+COPY start_trading.sh /app/start_trading.sh
+RUN chmod +x /app/start_trading.sh && sed -i 's/\r$//' /app/start_trading.sh
+
+# Create directories for logs and state with proper permissions
+RUN mkdir -p /app/logs /app/state && chmod -R 755 /app/logs /app/state
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
-ENV EXPIRY=10FEB26
-ENV ATM=25250
+ENV TZ=Asia/Kolkata
 
-# No HEALTHCHECK - Railway handles this, and this is a background worker (no HTTP)
-# Railway will detect no port exposed and skip HTTP healthcheck
+# Expose monitor dashboard port
+EXPOSE 8050
 
-# Use shell form to expand environment variables
-CMD python -m baseline_v1_live.baseline_v1_live --expiry ${EXPIRY} --atm ${ATM}
+# Healthcheck (check if process is running)
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import os; exit(0 if os.path.exists('/app/baseline_v1_live/live_state.db') else 1)"
+
+# Use start script as entrypoint (reads from environment variables)
+CMD ["/app/start_trading.sh"]

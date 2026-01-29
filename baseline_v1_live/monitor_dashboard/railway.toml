@@ -1,0 +1,15 @@
+# Railway Configuration for Monitor Dashboard
+# Real-time trading dashboard - shares volume with trading-agent
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+numReplicas = 1
+sleepApplication = false
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+[service]
+internalPort = 8050

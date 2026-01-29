@@ -1,13 +1,18 @@
-# Railway Configuration for NIFTY Options Trading Agent
-# This is a background worker - no HTTP port exposed
+# Railway Configuration for NIFTY Options Trading Agent + Monitor Dashboard
+# Connects to OpenAlgo service via internal networking
+# Monitor dashboard runs on port 8050 within the same container
 
 [build]
-builder = "dockerfile"
+builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# No healthcheck for background workers
-healthcheckPath = ""
 numReplicas = 1
-restartPolicyType = "on_failure"
+sleepApplication = false
+restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
+startCommand = "/app/start_trading.sh"
+
+[service]
+# Expose monitor dashboard port
+internalPort = 8050

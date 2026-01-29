@@ -1,0 +1,29 @@
+# Dockerfile for Monitor Dashboard on Railway
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy monitor dashboard requirements
+COPY baseline_v1_live/monitor_dashboard/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy monitor dashboard code
+COPY baseline_v1_live/monitor_dashboard/ .
+
+# Create state directory for volume mount
+RUN mkdir -p /app/state
+
+# Expose Streamlit port
+EXPOSE 8050
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV DB_PATH=/app/state/live_state.db
+
+# Run Streamlit
+CMD ["streamlit", "run", "app.py", "--server.port=8050", "--server.address=0.0.0.0", "--server.headless=true"]

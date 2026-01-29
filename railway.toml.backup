@@ -1,0 +1,13 @@
+# Railway Configuration for NIFTY Options Trading Agent
+# This is a background worker - no HTTP port exposed
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# No healthcheck for background workers
+healthcheckPath = ""
+numReplicas = 1
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5

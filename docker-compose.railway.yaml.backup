@@ -1,0 +1,76 @@
+services:
+  # OpenAlgo API (dependency)
+  # Using existing openalgo:latest image
+  openalgo:
+    image: openalgo:latest
+    container_name: openalgo
+    ports:
+      - "5001:5000"  # Changed from 5000 to 5001 (macOS uses 5000)
+      - "8765:8765"  # WebSocket proxy
+    volumes:
+      - ./openalgo-zerodha/openalgo/.env:/app/.env:ro  # Mount .env file (not copied during build)
+      - openalgo_data:/app/db
+      - openalgo_logs:/app/log
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: python -c "import socket; s=socket.socket(); s.connect(('localhost', 5000)); s.close()"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Baseline V1 Trading Agent
+  trading_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: baseline_v1_live
+    depends_on:
+      openalgo:
+        condition: service_healthy
+    volumes:
+      - ./.env:/app/.env:ro  # Read-only secrets (root-level .env)
+      - ./logs:/app/logs  # Persist logs on host
+      - trading_state:/app/state  # Persist SQLite state in /app/state
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENALGO_HOST=http://openalgo:5000
+      - OPENALGO_WS_URL=ws://openalgo:8765
+      - STATE_DB_PATH=/app/state/live_state.db
+    restart: unless-stopped
+    command: >
+      python -m baseline_v1_live.baseline_v1_live
+      --expiry ${EXPIRY:-30JAN26}
+      --atm ${ATM:-23500}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Optional: Monitor Dashboard
+  monitor:
+    build:
+      context: ./baseline_v1_live/monitor_dashboard
+      dockerfile: Dockerfile
+    container_name: trading_monitor
+    depends_on:
+      - trading_agent
+    ports:
+      - "8050:8050"
+    volumes:
+      - trading_state:/app/state:ro  # Read-only access to state
+    environment:
+      - DB_PATH=/app/state/live_state.db
+    restart: unless-stopped
+
+volumes:
+  openalgo_data:
+  openalgo_logs:
+  trading_state:
+
+networks:
+  default:
+    name: trading_network
