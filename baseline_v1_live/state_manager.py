@@ -824,7 +824,7 @@ class StateManager:
         """Save daily state (cumulative R, exit status, etc.) with atomic transaction"""
         cursor = self.conn.cursor()
 
-params = (
+        params = (
             datetime.now(IST).date().isoformat(),
             state.get('cumulative_R', 0),
             1 if state.get('daily_exit_triggered', False) else 0,
