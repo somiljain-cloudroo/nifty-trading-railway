@@ -33,17 +33,19 @@ services:
     volumes:
       - ./.env:/app/.env:ro  # Read-only secrets (root-level .env)
       - ./logs:/app/logs  # Persist logs on host
-      - trading_state:/app/state  # Persist SQLite state in /app/state
+      - trading_state:/app/state  # Persist SQLite state
     environment:
       - PYTHONUNBUFFERED=1
+      - STATE_DB_PATH=/app/state/live_state.db
       - OPENALGO_HOST=http://openalgo:5000
       - OPENALGO_WS_URL=ws://openalgo:8765
-      - STATE_DB_PATH=/app/state/live_state.db
+      - TELEGRAM_ENABLED=${TELEGRAM_ENABLED:-true}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     restart: unless-stopped
     command: >
       python -m baseline_v1_live.baseline_v1_live
-      --expiry ${EXPIRY:-30JAN26}
-      --atm ${ATM:-23500}
+      --auto
     logging:
       driver: "json-file"
       options:

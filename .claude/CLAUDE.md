@@ -10,6 +10,44 @@
 
 ---
 
+## 🔧 Development & Git Workflow (READ FIRST!)
+
+**MANDATORY SOP for all code changes:** See `.claude/GIT_SOP.md`
+
+**Branch Structure:**
+- `main` → Production only (EC2 runs this)
+- `feature/feature-X` → Your feature development
+- `draft/feature-X` → Isolated test (main + feature)
+
+**Quick Workflow:**
+```bash
+# 1. Start feature
+git checkout main && git pull
+git checkout -b feature/my-feature
+
+# 2. Build & test locally
+# (Commit freely, break things if needed)
+
+# 3. Before market (9:15 AM):
+git checkout main
+git checkout -b draft/my-feature
+git merge feature/my-feature
+git tag pre-market-YYYYMMDD-my-feature
+git push --tags
+
+# 4. After market (3:30 PM):
+# If good: git checkout main && git merge feature/my-feature && git push
+# If bad: git branch -D draft/my-feature feature/my-feature && git push origin --delete draft/my-feature feature/my-feature
+```
+
+**Hard Rules:**
+- ❌ Never code during market hours (9:15 AM - 3:30 PM)
+- ❌ Never test directly on main
+- ❌ Never delete tags
+- ❌ Never deploy draft/experiment to EC2
+
+---
+
 ## 📋 Architecture at a Glance (3 minutes)
 
 ```
@@ -155,11 +193,14 @@ After a swing low, the next swing must be a high. After a high, the next must be
 
 ### Swing Updates (Same Direction)
 
-If a **new extreme** forms BEFORE the next alternating swing:
+If a **new extreme** forms BEFORE the next alternating swing, AND gets 2-watch confirmation:
 - **Swing LOW @ 80** detected
 - Before any HIGH, price drops to **75** (new lower low)
+- Wait for 2 watch confirmations (HH+HC pattern twice)
 - **Action**: UPDATE the swing low from 80 → 75
 - **Reason**: 75 is the true extreme, not the premature 80
+
+**Key Point:** Updates are NOT immediate - they require the same 2-watch confirmation as initial swings. This prevents noise and false signals from being marked as swing updates.
 
 This ensures we always track the TRUE extremes, not intermediate levels.
 
@@ -776,7 +817,149 @@ See **openalgo-integration-rules.md** for complete details.
 
 ---
 
+## Sub-Agents Architecture
+
+The system uses specialized sub-agents to handle different functional domains. This reduces context clutter and enables focused expertise for each area.
+
+**Complete Reference:** See `.claude/SUB_AGENTS_REFERENCE.md` for detailed documentation on each agent, including domain knowledge, use cases, and investigation examples.
+
+### Agent Types
+
+**Skills** (Slash Commands) - Interactive work with specialized context. User stays in conversation.
+- Invoke with `/skill-name` (e.g., `/trading-strategy`, `/pre-commit`)
+- Located in `.claude/skills/<skill-name>/SKILL.md`
+
+**Subagents** - Autonomous delegation. Agent works independently and returns results.
+- Invoke via Task tool with `subagent_type` parameter
+- Located in `.claude/agents/`
+- Built-in: `Explore`, `Plan`, `Bash`, `general-purpose`
+- Custom: Our domain-specific agents (e.g., `trading-strategy-agent`)
+
+### Available Agents
+
+#### Domain Agents (6)
+
+| Agent | Skill | Subagent | Responsibility |
+|-------|-------|------------|----------------|
+| Trading Strategy | `/trading-strategy` | `trading-strategy-agent` | Swing detection, filtration, tie-breakers |
+| Order Execution | `/order-execution` | `order-execution-agent` | Orders, positions, R-multiples |
+| Broker Integration | `/broker-integration` | `broker-integration-agent` | OpenAlgo API, WebSocket |
+| State Management | `/state-management` | `state-management-agent` | Database, persistence |
+| Monitoring Alerts | `/monitoring-alerts` | `monitoring-alerts-agent` | Dashboard, Telegram |
+| Infrastructure | `/infrastructure` | `infrastructure-agent` | Config, Docker, EC2 |
+
+#### Quality Agents (4)
+
+| Agent | Skill | Subagent | Responsibility |
+|-------|-------|------------|----------------|
+| Code Reviewer | `/code-reviewer` | `code-reviewer-agent` | Safety, patterns, bugs |
+| Integration Checker | `/integration-checker` | `integration-checker-agent` | Cross-module impact |
+| Test Runner | `/test-runner` | `test-runner-agent` | Testing, validation |
+| E2E Workflow | `/e2e-workflow` | `e2e-workflow-agent` | Pipeline validation |
+
+#### Workflow Skills (1)
+
+| Skill | Purpose |
+|-------|---------|
+| `/pre-commit` | Orchestrate quality checks before commit |
+
+### Quick Reference: When to Use Which Agent
+
+| User Intent | Agent |
+|-------------|-------|
+| Swing not detecting | `trading-strategy` |
+| Candidate disqualified | `trading-strategy` |
+| Tie-breaker wrong | `trading-strategy` |
+| Order cancelled unexpectedly | `order-execution` |
+| Position sizing wrong | `order-execution` |
+| Daily limit not triggering | `order-execution` |
+| WebSocket dropping | `broker-integration` |
+| Ticks stopped | `broker-integration` |
+| Order API error | `broker-integration` |
+| Crash recovery | `state-management` |
+| Database query | `state-management` |
+| Schema migration | `state-management` |
+| Dashboard issue | `monitoring-alerts` |
+| Add Telegram alert | `monitoring-alerts` |
+| Deploy to EC2 | `infrastructure` |
+| Docker issue | `infrastructure` |
+| Config change | `infrastructure` |
+| Review code changes | `code-reviewer` |
+| Check module impact | `integration-checker` |
+| Run tests | `test-runner` |
+| Validate pipeline | `e2e-workflow` |
+| Quality checks before commit | `pre-commit` |
+
+### Cross-Agent Workflows
+
+#### New Trade Entry Flow
+```
+trading-strategy → order-execution → broker-integration → state-management → monitoring-alerts
+     |                  |                  |                   |                  |
+  Qualifies         Places SL          Sends to           Persists          Sends
+  candidate         entry order        OpenAlgo           position          Telegram
+```
+
+#### Debugging Failed Trade
+```
+1. trading-strategy: Check if swing qualified
+2. order-execution: Check if order was placed/filled
+3. broker-integration: Check OpenAlgo logs/errors
+4. state-management: Query order history
+```
+
+#### Pre-Commit Workflow
+```
+1. Identify changes → 2. Code review → 3. Integration check
+                                              ↓
+4. System validation ← 5. E2E check (if trading logic) → 6. Commit
+```
+
+### Context Files Per Agent
+
+Each agent loads specific context before working:
+
+| Agent | Primary Context | Secondary Context |
+|-------|-----------------|-------------------|
+| `trading-strategy` | SWING_DETECTION_THEORY.md, STRIKE_FILTRATION_THEORY.md | swing-detection-rules.md |
+| `order-execution` | ORDER_EXECUTION_THEORY.md | trading-rules.md |
+| `broker-integration` | openalgo-integration-rules.md | data-pipeline-rules.md |
+| `state-management` | trading-rules.md (State section) | CLAUDE.md (Schema) |
+| `monitoring-alerts` | TELEGRAM_SETUP.md | safety-rules.md |
+| `infrastructure` | DAILY_STARTUP.md, PRE_LAUNCH_CHECKLIST.md | safety-rules.md |
+| `code-reviewer` | safety-rules.md, trading-rules.md | All theory files |
+| `integration-checker` | CLAUDE.md (Architecture) | Module dependency graph |
+| `test-runner` | Theory files | check_system.py |
+| `e2e-workflow` | All theory files | CLAUDE.md (Architecture) |
+
+### Files Owned Per Agent
+
+| Agent | Files |
+|-------|-------|
+| `trading-strategy` | swing_detector.py, continuous_filter.py, strike_filter.py |
+| `order-execution` | order_manager.py, position_tracker.py |
+| `broker-integration` | data_pipeline.py |
+| `state-management` | state_manager.py, live_state.db |
+| `monitoring-alerts` | telegram_notifier.py, monitor_dashboard/ |
+| `infrastructure` | config.py, check_system.py, docker-compose.yaml, deploy.sh |
+
+---
+
 ## Code Change Guidelines
+
+**⚠️ CRITICAL: Git Workflow SOP**
+
+**ALWAYS follow the Git SOP for safe feature development:** See `.claude/GIT_SOP.md`
+
+**TL;DR:**
+- `main` = Production only (safe)
+- `feature/feature-X` = Development (your work)
+- `draft/feature-X` = Isolated test (main + your work)
+- Pre-market: Tag with `pre-market-YYYYMMDD-feature-X`
+- Post-market: Merge to main if good, delete if failed
+- ❌ Never code during market hours (9:15 AM - 3:30 PM)
+- ❌ Never test directly on main
+- ❌ Never delete tags
 
 **When modifying core files:**
 - `order_manager.py`

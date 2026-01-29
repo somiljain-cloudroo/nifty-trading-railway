@@ -198,6 +198,7 @@ class StateManager:
                 daily_exit_reason TEXT,
                 total_pnl REAL,
                 total_positions INTEGER,
+                expiry TEXT,
                 updated_at TEXT
             )
         ''')
@@ -563,11 +564,7 @@ class StateManager:
         """Apply database migrations for schema changes"""
         cursor = self.conn.cursor()
 
-        # Check if all_swings_log has unique constraint
-        cursor.execute("PRAGMA table_info(all_swings_log)")
-        columns = cursor.fetchall()
-
-        # Check if constraint exists by trying to get index info
+        # Migration 1: Add unique constraint to all_swings_log
         cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='all_swings_log'")
         table_sql = cursor.fetchone()
 
@@ -616,6 +613,67 @@ class StateManager:
                        f"(kept {new_count} unique swings)")
         else:
             logger.debug("all_swings_log table already has unique constraint")
+
+        # Migration 2: Add expiry column to daily_state
+        cursor.execute("PRAGMA table_info(daily_state)")
+        columns = {col[1]: col for col in cursor.fetchall()}
+
+        if 'expiry' not in columns:
+            logger.info("Migrating daily_state table to add expiry column...")
+            cursor.execute("ALTER TABLE daily_state ADD COLUMN expiry TEXT")
+            self.conn.commit()
+            logger.info("Migration complete: Added expiry column to daily_state")
+        else:
+            logger.debug("daily_state table already has expiry column")
+
+        # Migration 3: Add error_notifications_log table
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='error_notifications_log'")
+        if not cursor.fetchone():
+            logger.info("Creating error_notifications_log table...")
+            cursor.execute('''
+                CREATE TABLE error_notifications_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    error_type TEXT NOT NULL,
+                    error_message TEXT,
+                    first_occurrence TIMESTAMP,
+                    last_occurrence TIMESTAMP,
+                    occurrence_count INTEGER DEFAULT 1,
+                    last_notification_sent TIMESTAMP,
+                    notification_count INTEGER DEFAULT 0,
+                    is_resolved BOOLEAN DEFAULT 0,
+                    resolved_at TIMESTAMP
+                )
+            ''')
+            self.conn.commit()
+            logger.info("Migration complete: Created error_notifications_log table")
+        else:
+            logger.debug("error_notifications_log table already exists")
+
+        # Migration 4: Add operational_state table
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='operational_state'")
+        if not cursor.fetchone():
+            logger.info("Creating operational_state table...")
+            cursor.execute('''
+                CREATE TABLE operational_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    current_state TEXT NOT NULL DEFAULT 'STARTING',
+                    state_entered_at TIMESTAMP,
+                    last_check_at TIMESTAMP,
+                    error_reason TEXT,
+                    updated_at TIMESTAMP
+                )
+            ''')
+
+            # Initialize with STARTING state
+            cursor.execute('''
+                INSERT INTO operational_state (id, current_state, state_entered_at, updated_at)
+                VALUES (1, 'STARTING', ?, ?)
+            ''', (datetime.now(IST).isoformat(), datetime.now(IST).isoformat()))
+
+            self.conn.commit()
+            logger.info("Migration complete: Created operational_state table")
+        else:
+            logger.debug("operational_state table already exists")
 
     @atomic_transaction
     def save_positions(self, positions: List[Dict]):
@@ -766,30 +824,32 @@ class StateManager:
         """Save daily state (cumulative R, exit status, etc.) with atomic transaction"""
         cursor = self.conn.cursor()
 
-        params = (
+params = (
             datetime.now(IST).date().isoformat(),
             state.get('cumulative_R', 0),
             1 if state.get('daily_exit_triggered', False) else 0,
             state.get('daily_exit_reason'),
             state.get('total_pnl', 0),
             state.get('total_positions', 0),
+            state.get('expiry'),
             datetime.now(IST).isoformat()
         )
 
         if self.db_type == 'postgresql':
             cursor.execute('''
-                INSERT INTO daily_state VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO daily_state VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (trade_date) DO UPDATE SET
                     cumulative_R = EXCLUDED.cumulative_R,
                     daily_exit_triggered = EXCLUDED.daily_exit_triggered,
                     daily_exit_reason = EXCLUDED.daily_exit_reason,
                     total_pnl = EXCLUDED.total_pnl,
                     total_positions = EXCLUDED.total_positions,
+                    expiry = EXCLUDED.expiry,
                     updated_at = EXCLUDED.updated_at
             ''', params)
         else:
             cursor.execute('''
-                INSERT OR REPLACE INTO daily_state VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO daily_state VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', params)
 
         # Commit handled by @atomic_transaction decorator
@@ -1221,6 +1281,75 @@ class StateManager:
         self.conn.commit()
         logger.info("[DAILY-RESET] Daily dashboard data reset complete")
     
+    def get_current_state(self) -> str:
+        """Get current operational state"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT current_state FROM operational_state WHERE id = 1')
+        row = cursor.fetchone()
+        return row[0] if row else 'STARTING'
+
+    def transition_to(self, new_state: str, reason: str = ""):
+        """
+        Transition to new operational state
+
+        Args:
+            new_state: 'STARTING', 'ACTIVE', 'WAITING', 'ERROR', 'SHUTDOWN'
+            reason: Reason for transition
+        """
+        now = datetime.now(IST)
+        cursor = self.conn.cursor()
+
+        old_state = self.get_current_state()
+
+        cursor.execute('''
+            UPDATE operational_state
+            SET current_state = ?,
+                state_entered_at = ?,
+                error_reason = ?,
+                updated_at = ?
+            WHERE id = 1
+        ''', (new_state, now.isoformat(), reason, now.isoformat()))
+
+        self.conn.commit()
+
+        logger.info(f"[STATE] Transitioned from {old_state} -> {new_state}: {reason}")
+
+    def should_check_health(self) -> bool:
+        """
+        Check if health check should be performed (in WAITING mode)
+
+        Returns:
+            True if 5 minutes have elapsed since last check
+        """
+        from .config import WAITING_MODE_CHECK_INTERVAL
+
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT last_check_at FROM operational_state WHERE id = 1')
+        row = cursor.fetchone()
+
+        if not row or not row[0]:
+            return True
+
+        last_check = datetime.fromisoformat(row[0])
+        now = datetime.now(IST)
+        elapsed = (now - last_check).total_seconds()
+
+        return elapsed >= WAITING_MODE_CHECK_INTERVAL
+
+    def update_last_check(self):
+        """Update last health check timestamp"""
+        now = datetime.now(IST)
+        cursor = self.conn.cursor()
+
+        cursor.execute('''
+            UPDATE operational_state
+            SET last_check_at = ?,
+                updated_at = ?
+            WHERE id = 1
+        ''', (now.isoformat(), now.isoformat()))
+
+        self.conn.commit()
+
     def close(self):
         """Close database connection"""
         if self.conn:
